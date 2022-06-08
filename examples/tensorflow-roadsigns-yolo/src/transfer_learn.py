@@ -434,6 +434,37 @@ def init_train_flow() -> Flow:
             model_dir="model",
             upstream_tasks=[yolo_load_best_checkpoint],
         )
+        coco_validation_results_filepath = pyplugs.call_task(
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+            "prediction",
+            "predict_bounding_boxes",
+            estimator=object_detector,
+            dataset=data,
+            bbox_postprocessing=bbox_postprocessing,
+            dataset_subset="validation",
+            coco_json_filepath=coco_json_filepath,
+            batch_size=batch_size,
+            output_filepath="predictions_validation.json",
+            model_dir="model",
+            upstream_tasks=[yolo_load_best_checkpoint],
+        )
+        draw_bounding_box_on_validation_images = pyplugs.call_task(
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+            "prediction",
+            "draw_bounding_box_on_images",
+            images_dir=validation_images_dir,
+            coco_json_filepath=coco_json_filepath,
+            coco_results_filepath=coco_validation_results_filepath,
+            output_dir="predictions/validation",
+        )
+        coco_validation_evaluate = pyplugs.call_task(
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+            "evaluate",
+            "coco_evaluate",
+            coco_json_filepath=coco_validation_json_filepath,
+            coco_results_filepath=coco_validation_results_filepath,
+            output_filepath="coco_metrics_validation.json",
+        )
         model_version = pyplugs.call_task(  # noqa: F841
             f"{_PLUGINS_IMPORT_PATH}.registry",
             "mlflow",
@@ -449,6 +480,20 @@ def init_train_flow() -> Flow:
             "upload_file_as_artifact",
             artifact_path="train_log.csv",
             upstream_tasks=[history],
+        )
+        log_coco_predictions_validation = pyplugs.call_task(  # noqa: F841
+            f"{_PLUGINS_IMPORT_PATH}.artifacts",
+            "mlflow",
+            "upload_file_as_artifact",
+            artifact_path="predictions_validation.json",
+            upstream_tasks=[coco_validation_results_filepath],
+        )
+        log_coco_validation_evaluate = pyplugs.call_task(  # noqa: F841
+            f"{_PLUGINS_IMPORT_PATH}.artifacts",
+            "mlflow",
+            "upload_file_as_artifact",
+            artifact_path="coco_metrics_validation.csv",
+            upstream_tasks=[coco_validation_evaluate],
         )
 
     return flow
