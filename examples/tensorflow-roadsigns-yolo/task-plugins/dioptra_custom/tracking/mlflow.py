@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, cast
 
 import mlflow
 import structlog
@@ -29,6 +29,7 @@ from dioptra.sdk.exceptions import TensorflowDependencyError
 from dioptra.sdk.object_detection.architectures import YOLOV1ObjectDetector
 from dioptra.sdk.utilities.decorators import require_package
 
+from .yolo_v1 import load_model as load_yolo_v1_model
 from .yolo_v1 import log_model as log_yolo_v1_model
 
 LOGGER: BoundLogger = structlog.stdlib.get_logger()
@@ -48,7 +49,7 @@ except ImportError:  # pragma: nocover
 def log_tensorflow_keras_estimator(
     estimator: Model,
     model_dir: str,
-    log_model_kwargs: Optional[Dict[str, Any]] = None,
+    log_model_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Logs a Keras estimator trained during the current run to the MLFlow registry.
 
@@ -72,3 +73,39 @@ def log_tensorflow_keras_estimator(
         "Tensorflow Keras model logged to tracking server",
         model_dir=model_dir,
     )
+
+
+@pyplugs.register
+def load_tensorflow_yolo_v1_object_detector(
+    mlflow_run_id: str | None = None,
+    name: str | None = None,
+    version: int | None = None,
+) -> Model:
+    """Loads a registered YOLO V1 object detector.
+
+    Args:
+        mlflow_run_id: A MLflow Run ID of a previous model training run.
+        name: The name of the registered model in the MLFlow model registry.
+        version: The version number of the registered model in the MLFlow registry.
+
+    Returns:
+        A trained :py:class:`tf.keras.models.Model` object.
+    """
+    uri: str
+    if mlflow_run_id is not None:
+        uri = f"runs:/{mlflow_run_id}/model"
+
+    elif name is not None and version is not None:
+        uri = f"models:/{name}/{version}"
+
+    LOGGER.info(
+        "Load Tensorflow YOLO V1 object detector from model registry",
+        uri=uri,
+    )
+
+    return cast(Model, load_yolo_v1_model(model_uri=uri))
+
+
+@pyplugs.register
+def is_resume_mlflow_run_id_none(resume_mlflow_run_id: str | None) -> bool:
+    return resume_mlflow_run_id is None

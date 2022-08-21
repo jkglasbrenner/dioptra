@@ -34,7 +34,7 @@ LOGGER: BoundLogger = structlog.stdlib.get_logger()
 @pyplugs.register
 @require_package("tensorflow", exc_type=TensorflowDependencyError)
 def create_object_detection_dataset(
-    image_size: tuple[int, int, int],
+    image_size: tuple[int, int, int] | YOLOV1ObjectDetector,
     grid_shape: tuple[int, int] | YOLOV1ObjectDetector,
     labels: Sequence[str],
     training_directory: Path | str | None = None,
@@ -49,6 +49,9 @@ def create_object_detection_dataset(
     augmentations_seed: int | None = None,
     shuffle_seed: int | None = None,
 ) -> TensorflowObjectDetectionData:
+    if isinstance(image_size, YOLOV1ObjectDetector):
+        image_size = tuple([int(x) for x in image_size.image_input_shape])
+
     if isinstance(grid_shape, YOLOV1ObjectDetector):
         grid_shape = grid_shape.output_grid_shape
 

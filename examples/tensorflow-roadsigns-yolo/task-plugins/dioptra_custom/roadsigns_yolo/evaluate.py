@@ -36,7 +36,31 @@ def coco_evaluate(
     output_filepath = Path(output_filepath)
 
     coco_gt = COCO(coco_json_filepath)
-    coco_dt = coco_gt.loadRes(coco_results_filepath)
+
+    try:
+        coco_dt = coco_gt.loadRes(coco_results_filepath)
+
+    except IndexError:
+        coco_eval_no_predictions: dict[str, float] = {
+            "AP @[ IoU=0.50:0.95 | area=   all | maxDets=100 ]": float(0),
+            "AP @[ IoU=0.50      | area=   all | maxDets=100 ]": float(0),
+            "AP @[ IoU=0.75      | area=   all | maxDets=100 ]": float(0),
+            "AP @[ IoU=0.50:0.95 | area= small | maxDets=100 ]": float(0),
+            "AP @[ IoU=0.50:0.95 | area=medium | maxDets=100 ]": float(0),
+            "AP @[ IoU=0.50:0.95 | area= large | maxDets=100 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area=   all | maxDets=100 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area= small | maxDets=100 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area=medium | maxDets=100 ]": float(0),
+            "AR @[ IoU=0.50:0.95 | area= large | maxDets=100 ]": float(0),
+        }
+
+        with output_filepath.open("wt") as f:
+            json.dump(obj=coco_eval_no_predictions, fp=f)
+
+        return None
+
     coco_annotation_type = "bbox"
 
     coco_eval = COCOeval(coco_gt, coco_dt, coco_annotation_type)

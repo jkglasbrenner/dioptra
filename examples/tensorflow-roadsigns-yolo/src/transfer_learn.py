@@ -24,7 +24,7 @@ from typing import Any
 import click
 import mlflow
 import structlog
-from prefect import Flow, Parameter
+from prefect import Flow, Parameter, case
 from prefect.utilities.logging import get_logger as get_prefect_logger
 from structlog.stdlib import BoundLogger
 
@@ -71,6 +71,20 @@ CALLBACKS: list[dict[str, Any]] = [
 LOGGER: BoundLogger = structlog.stdlib.get_logger()
 
 
+def _coerce_bool_string_to_bool_obj(ctx, param, value):
+    if value.strip().lower() == "true":
+        return True
+
+    return False
+
+
+def _coerce_empty_string_to_none_obj(ctx, param, value):
+    if not value.strip().lower():
+        return None
+
+    return value.strip().lower()
+
+
 def _coerce_string_none_to_none_obj(ctx, param, value):
     if value.strip().lower() == "none":
         return None
@@ -106,6 +120,13 @@ def _coerce_comma_separated_list_of_strings(ctx, param, value):
         "Validation data directory for object detection dataset in PASCAL VOC format "
         "(in container)"
     ),
+)
+@click.option(
+    "--validation-coco-json",
+    type=click.Path(
+        exists=True, file_okay=True, dir_okay=False, resolve_path=True, readable=True
+    ),
+    help="The coco.json file associated with the validation dataset",
 )
 @click.option(
     "--image-size",
@@ -164,6 +185,12 @@ def _coerce_comma_separated_list_of_strings(ctx, param, value):
     default="crosswalk,speedlimit,stop,trafficlight",
 )
 @click.option(
+    "--bbox-postprocessor",
+    type=click.Choice(["nms", "confluence"]),
+    help="The postprocessing algorithm to apply to the bounding boxes.",
+    default="confluence",
+)
+@click.option(
     "--n-bounding-boxes",
     type=click.INT,
     help=(
@@ -185,13 +212,29 @@ def _coerce_comma_separated_list_of_strings(ctx, param, value):
     default=32,
 )
 @click.option(
+    "--resume-mlflow-run-id",
+    type=click.STRING,
+    help=(
+        "A MLflow run ID. If set, loads the model saved from this run before training."
+    ),
+    callback=_coerce_empty_string_to_none_obj,
+    default="",
+)
+@click.option(
+    "--finetune",
+    type=click.STRING,
+    help="If true, allow the backbone model weights to update during training.",
+    callback=_coerce_bool_string_to_bool_obj,
+    default="false",
+)
+@click.option(
     "--register-model-name",
     type=click.STRING,
-    default="",
     help=(
         "Register the trained model under the provided name. If an empty string, "
         "then the trained model will not be registered."
     ),
+    default="",
 )
 @click.option(
     "--learning-rate", type=click.FLOAT, help="Model learning rate", default=3e-5
@@ -211,6 +254,7 @@ def _coerce_comma_separated_list_of_strings(ctx, param, value):
 def train(
     training_dir,
     validation_dir,
+    validation_coco_json,
     image_size,
     augmentations,
     model_architecture,
@@ -220,9 +264,12 @@ def train(
     classification_loss,
     epochs,
     labels,
+    bbox_postprocessor,
     n_bounding_boxes,
     n_classes,
     batch_size,
+    resume_mlflow_run_id,
+    finetune,
     register_model_name,
     learning_rate,
     optimizer,
@@ -233,6 +280,7 @@ def train(
         entry_point="transfer_learn",
         training_dir=training_dir,
         validation_dir=validation_dir,
+        validation_coco_json=validation_coco_json,
         image_size=image_size,
         augmentations=augmentations,
         model_architecture=model_architecture,
@@ -242,9 +290,12 @@ def train(
         classification_loss=classification_loss,
         epochs=epochs,
         labels=labels,
+        bbox_postprocessor=bbox_postprocessor,
         n_bounding_boxes=n_bounding_boxes,
         n_classes=n_classes,
         batch_size=batch_size,
+        resume_mlflow_run_id=resume_mlflow_run_id,
+        finetune=finetune,
         register_model_name=register_model_name,
         learning_rate=learning_rate,
         optimizer=optimizer,
@@ -259,6 +310,8 @@ def train(
                 active_run=active_run,
                 training_dir=training_dir,
                 validation_dir=validation_dir,
+                validation_images_dir=str(Path(validation_dir) / "images"),
+                validation_coco_json=validation_coco_json,
                 image_size=image_size,
                 augmentations=augmentations,
                 model_architecture=model_architecture,
@@ -268,9 +321,12 @@ def train(
                 classification_loss=classification_loss,
                 epochs=epochs,
                 labels=labels,
+                bbox_postprocessor=bbox_postprocessor,
                 n_bounding_boxes=n_bounding_boxes,
                 n_classes=n_classes,
                 batch_size=batch_size,
+                resume_mlflow_run_id=resume_mlflow_run_id,
+                finetune=finetune,
                 register_model_name=register_model_name,
                 learning_rate=learning_rate,
                 optimizer_name=optimizer,
@@ -287,6 +343,8 @@ def init_train_flow() -> Flow:
             active_run,
             training_dir,
             validation_dir,
+            validation_images_dir,
+            validation_coco_json,
             image_size,
             augmentations,
             model_architecture,
@@ -296,9 +354,12 @@ def init_train_flow() -> Flow:
             classification_loss,
             epochs,
             labels,
+            bbox_postprocessor,
             n_bounding_boxes,
             n_classes,
             batch_size,
+            resume_mlflow_run_id,
+            finetune,
             register_model_name,
             learning_rate,
             optimizer_name,
@@ -307,6 +368,8 @@ def init_train_flow() -> Flow:
             Parameter("active_run"),
             Parameter("training_dir"),
             Parameter("validation_dir"),
+            Parameter("validation_images_dir"),
+            Parameter("validation_coco_json"),
             Parameter("image_size"),
             Parameter("augmentations"),
             Parameter("model_architecture"),
@@ -316,9 +379,12 @@ def init_train_flow() -> Flow:
             Parameter("classification_loss"),
             Parameter("epochs"),
             Parameter("labels"),
+            Parameter("bbox_postprocessor"),
             Parameter("n_bounding_boxes"),
             Parameter("n_classes"),
             Parameter("batch_size"),
+            Parameter("resume_mlflow_run_id"),
+            Parameter("finetune"),
             Parameter("register_model_name"),
             Parameter("learning_rate"),
             Parameter("optimizer_name"),
@@ -364,23 +430,41 @@ def init_train_flow() -> Flow:
             callbacks_list=CALLBACKS,
             upstream_tasks=[init_tensorflow_results],
         )
-        object_detector = pyplugs.call_task(
-            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
-            "yolo_detectors",
-            "init_yolo_detectors",
-            model_architecture=model_architecture,
-            input_shape=image_size,
-            n_bounding_boxes=n_bounding_boxes,
-            n_classes=n_classes,
-            backbone=backbone,
-            detector=detector,
-            upstream_tasks=[init_tensorflow_results],
+        resume_mlflow_run_id_is_none = pyplugs.call_task(
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.tracking",
+            "mlflow",
+            "is_resume_mlflow_run_id_none",
+            resume_mlflow_run_id=resume_mlflow_run_id,
         )
+
+        with case(resume_mlflow_run_id_is_none, True):
+            object_detector = pyplugs.call_task(
+                f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+                "yolo_detectors",
+                "init_yolo_detectors",
+                model_architecture=model_architecture,
+                input_shape=image_size,
+                n_bounding_boxes=n_bounding_boxes,
+                n_classes=n_classes,
+                backbone=backbone,
+                detector=detector,
+                upstream_tasks=[init_tensorflow_results],
+            )
+
+        with case(resume_mlflow_run_id_is_none, False):
+            object_detector = pyplugs.call_task(
+                f"{_CUSTOM_PLUGINS_IMPORT_PATH}.tracking",
+                "mlflow",
+                "load_tensorflow_yolo_v1_object_detector",
+                mlflow_run_id=resume_mlflow_run_id,
+                upstream_tasks=[init_tensorflow_results],
+            )
+
         data = pyplugs.call_task(
             f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
             "data",
             "create_object_detection_dataset",
-            image_size=image_size,
+            image_size=object_detector,
             grid_shape=object_detector,
             labels=labels,
             training_directory=training_dir,
@@ -388,6 +472,13 @@ def init_train_flow() -> Flow:
             augmentations=augmentations,
             batch_size=batch_size,
             shuffle_seed=dataset_seed,
+        )
+        bbox_postprocessor_object = pyplugs.call_task(
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+            "bbox",
+            "init_bbox_postprocessor",
+            postprocessor=bbox_postprocessor,
+            grid_shape=object_detector,
         )
         bbox_iou = pyplugs.call_task(
             f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
@@ -403,20 +494,39 @@ def init_train_flow() -> Flow:
             wh_loss=wh_loss,
             classification_loss=classification_loss,
         )
-        history = pyplugs.call_task(
-            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
-            "yolo_train",
-            "yolo_train",
-            estimator=object_detector,
-            optimizer=optimizer,
-            loss=loss,
-            data=data,
-            fit_kwargs=dict(
-                epochs=epochs,
-                callbacks=callbacks_list,
-                verbose=2,
-            ),
-        )
+
+        with case(finetune, True):
+            history = pyplugs.call_task(
+                f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+                "yolo_train",
+                "yolo_finetune",
+                estimator=object_detector,
+                optimizer=optimizer,
+                loss=loss,
+                data=data,
+                fit_kwargs=dict(
+                    epochs=epochs,
+                    callbacks=callbacks_list,
+                    verbose=2,
+                ),
+            )
+
+        with case(finetune, False):
+            history = pyplugs.call_task(
+                f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+                "yolo_train",
+                "yolo_train",
+                estimator=object_detector,
+                optimizer=optimizer,
+                loss=loss,
+                data=data,
+                fit_kwargs=dict(
+                    epochs=epochs,
+                    callbacks=callbacks_list,
+                    verbose=2,
+                ),
+            )
+
         yolo_load_best_checkpoint = pyplugs.call_task(
             f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
             "yolo_train",
@@ -440,12 +550,11 @@ def init_train_flow() -> Flow:
             "predict_bounding_boxes",
             estimator=object_detector,
             dataset=data,
-            bbox_postprocessing=bbox_postprocessing,
+            bbox_postprocessing=bbox_postprocessor_object,
             dataset_subset="validation",
-            coco_json_filepath=coco_json_filepath,
+            coco_json_filepath=validation_coco_json,
             batch_size=batch_size,
             output_filepath="predictions_validation.json",
-            model_dir="model",
             upstream_tasks=[yolo_load_best_checkpoint],
         )
         draw_bounding_box_on_validation_images = pyplugs.call_task(
@@ -453,7 +562,7 @@ def init_train_flow() -> Flow:
             "prediction",
             "draw_bounding_box_on_images",
             images_dir=validation_images_dir,
-            coco_json_filepath=coco_json_filepath,
+            coco_json_filepath=validation_coco_json,
             coco_results_filepath=coco_validation_results_filepath,
             output_dir="predictions/validation",
         )
@@ -461,7 +570,7 @@ def init_train_flow() -> Flow:
             f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
             "evaluate",
             "coco_evaluate",
-            coco_json_filepath=coco_validation_json_filepath,
+            coco_json_filepath=validation_coco_json,
             coco_results_filepath=coco_validation_results_filepath,
             output_filepath="coco_metrics_validation.json",
         )
@@ -492,8 +601,16 @@ def init_train_flow() -> Flow:
             f"{_PLUGINS_IMPORT_PATH}.artifacts",
             "mlflow",
             "upload_file_as_artifact",
-            artifact_path="coco_metrics_validation.csv",
+            artifact_path="coco_metrics_validation.json",
             upstream_tasks=[coco_validation_evaluate],
+        )
+        log_images_with_bounding_boxes = pyplugs.call_task(  # noqa: F841
+            f"{_CUSTOM_PLUGINS_IMPORT_PATH}.roadsigns_yolo",
+            "mlflow",
+            "upload_directory_as_artifact",
+            directory="predictions",
+            artifact_prefix="predictions",
+            upstream_tasks=[draw_bounding_box_on_validation_images],
         )
 
     return flow

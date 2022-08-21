@@ -144,7 +144,7 @@ def draw_bounding_box_on_images(
         coco_results_filepath=coco_results_filepath,
     )
 
-    for file_name, image_with_bboxes in images_with_bboxes.items():
+    for file_name, image_with_bboxes in images_with_bboxes:
         output_filepath = output_dir / file_name
         iio.imwrite(uri=output_filepath, image=image_with_bboxes)
 
@@ -159,6 +159,7 @@ def _predict_bounding_boxes(
 ) -> Iterator[COCOResult]:
     data: Dataset = getattr(dataset, f"{dataset_subset}_dataset")
     data_filenames: list[str] = getattr(dataset, f"{dataset_subset}_images_filepaths")
+    num_image_files: int = len(data_filenames)
     coco_dataset: COCODataset = read_coco_json(coco_json_filepath)
     file_name_to_coco_id_mapper: dict[
         str, int
@@ -174,8 +175,9 @@ def _predict_bounding_boxes(
             pred_bbox, pred_conf, pred_labels
         )
 
-        for image_id in range(batch_size):
-            data_filename: str = str(data_filenames[data_filename_id])
+        images_remaining: int = num_image_files - data_filename_id
+        for image_id in range(min(batch_size, images_remaining)):
+            data_filename: str = str(Path(data_filenames[data_filename_id]).name)
             image_wh: dict[str, float] = file_name_to_wh_mapper[data_filename]
             coco_results: list[COCOResult] = to_coco_results_format(
                 bboxes=bboxes[image_id].numpy(),
@@ -196,7 +198,8 @@ def _draw_bounding_box_on_images(
     images_dir: str | Path,
     coco_json_filepath: str | Path,
     coco_results_filepath: str | Path,
-) -> Iterator[dict[str, npt.NDArray]]:
+    mode: str = "RGB",
+) -> Iterator[tuple[str, npt.NDArray]]:
     images_dir = Path(images_dir)
     coco_dataset: COCODataset = read_coco_json(coco_json_filepath)
     coco_results: list[COCOResult] = read_coco_results_json(coco_results_filepath)
@@ -207,14 +210,14 @@ def _draw_bounding_box_on_images(
     for filepath in images_dir.iterdir():
         if filepath.is_file():
             result = image_file_name_to_result_mapper[filepath.name]
-            image = iio.imread(filepath)
+            image = iio.imread(filepath, mode=mode)
             bboxes_on_image_array: npt.NDArray = add_bounding_boxes_to_image(
                 image=image,
                 bboxes=result["boxes"],
                 scores=result["scores"],
                 labels=result["labels"],
             )
-            yield {filepath.name: bboxes_on_image_array}
+            yield filepath.name, bboxes_on_image_array
 
 
 def read_coco_json(filepath: str | Path) -> COCODataset:
@@ -360,9 +363,9 @@ def create_image_file_name_to_result_mapper(
         coco_image_id: int = coco_image["id"]
         file_name: str = coco_image["file_name"]
         file_name_to_result_mapper[file_name] = {
-            "boxes": image_id_to_result_mapper[coco_image_id]["boxes"],
-            "labels": image_id_to_result_mapper[coco_image_id]["labels"],
-            "scores": image_id_to_result_mapper[coco_image_id]["scores"],
+            "boxes": image_id_to_result_mapper.get(coco_image_id, {"boxes": []})["boxes"],
+            "labels": image_id_to_result_mapper.get(coco_image_id, {"labels": []})["labels"],
+            "scores": image_id_to_result_mapper.get(coco_image_id, {"scores": []})["scores"],
         }
 
     return file_name_to_result_mapper
